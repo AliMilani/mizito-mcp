@@ -55,8 +55,16 @@ tools/               reverse-engineering + maintenance kit
 
 - Base `https://app.mizito.ir`. **Every** endpoint is `POST`; body `{}` when no args.
 - Auth: one `x-token` header. Minted by `POST /capi/session/create`
-  `{username, password}`, stored by the SPA in `localStorage.token`. Long-lived
-  JWT, no refresh flow observed.
+  `{username, password}`, stored by the SPA in `localStorage.token`.
+  **Verified by decoding it (2026-08-30):** HS256, claims are only `{jti, iat}` —
+  there is **no `exp` claim**, so the token does not self-expire. It stays valid
+  until Mizito revokes it server-side (logout elsewhere, password change, session
+  purge). Two consequences:
+  - Reliability: the MCP will not spontaneously break on a timer. If it 401s,
+    something actively invalidated the session.
+  - Security: `.env` holds a **non-expiring bearer credential equal to full
+    account access**. Keep it 0600, never commit it, and re-run
+    `tools/refresh-auth.sh` after any Mizito password change.
 - **Status codes are the discovery oracle:** `405` = endpoint doesn't exist,
   `400` = exists but wrong params, `200` = correct. This turns name-guessing
   into a fast binary search.
