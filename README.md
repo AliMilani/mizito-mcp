@@ -1,7 +1,8 @@
 # Mizito MCP
 
-Read-only MCP server for [Mizito](https://office.mizito.ir), the Iranian
+MCP server for [Mizito](https://office.mizito.ir), the Iranian
 project-management and team-chat tool. Projects, tasks, and internal chat.
+Reads are broad; the only write is sending a chat message.
 
 Built by reverse-engineering the SPA's own API; Mizito publishes no docs.
 
@@ -30,6 +31,7 @@ restart the client.
 | `list_chats(only_unread=False, limit=60)` | DMs + project groups, names resolved |
 | `read_chat(dialog_id, limit=30)` | messages with sender names |
 | `get_project_chat(project_id, limit=30)` | a project's group chat by project id |
+| `send_message(text, dialog_id=None, to=None)` | **write** — post a message to a DM or group |
 
 Typical chains:
 - "any unread messages?" → `list_chats(only_unread=True)` → `read_chat(id)`
@@ -80,6 +82,7 @@ tools/               reverse-engineering + maintenance kit
 | `tasks/badge` | `{}` | `{today,count,total_count}` |
 | `chat/getDialogs` | `{}` | `{dialogs:[...], pin_dialogs:[...]}` |
 | `chat/getHistory` | `{"dialog":"<id>","limit":20}` | message list |
+| `chat/send` | `{"dialog":"<id>","message":"<text>"}` | `true` |
 | `dashboard/getAllSummary` | `{}` | per-workspace rollup |
 | `labels/getAll` | `{"type":"project"}` | labels |
 
@@ -102,7 +105,19 @@ questions.
 
 ## Scope
 
-**Read-only, deliberately.** No create/update/delete. Write traffic was never
-captured, and untested writes against a live, shared workspace are not worth
-the risk. Adding writes = capture the mutation in the browser first, then
-implement.
+**Reads plus one write: `send_message`.** No create/update/delete on projects or
+tasks — that traffic was never captured, and untested writes against a live,
+shared workspace are not worth the risk. Adding more writes = capture the
+mutation in the browser first, then implement.
+
+`send_message` notes (found 2026-09-01 by 405/400/200 probing, not by capture):
+- Endpoint is `chat/send`; `chat/sendMessage` and friends are all 405.
+- `{}` and `{dialog}` alone → 400. `{dialog, message}` → `200 true`.
+- **`message:""` returns 200 too** and posts a blank message, so the tool
+  rejects empty text before calling the API.
+- The API returns bare `true`, no message object — the tool re-reads the last 15
+  messages and matches the text, and raises if it isn't there. Don't trust a 200.
+  The 15 (not 3) matters: bot peers like دستيار ميزيتو fire several auto-replies
+  in the same second and push your own echo down the list.
+- `to=` resolves a name/title substring against `list_chats`; ambiguous matches
+  (e.g. a word shared by several project titles) raise with the candidates listed.

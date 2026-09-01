@@ -318,5 +318,63 @@ def get_project_chat(project_id: str, limit: int = 30) -> list[dict]:
     raise ValueError(f"No project with id {project_id}.")
 
 
+@mcp.tool()
+def send_message(text: str, dialog_id: str | None = None,
+                 to: str | None = None) -> dict:
+    """Send a text message to a Mizito chat (DM or project group).
+
+    Give either `dialog_id` (from list_chats) or `to` — a person's name or a
+    project/group title, matched case-insensitively against list_chats titles.
+    Newlines in `text` are preserved.
+
+    Returns the resolved target plus the message as it came back from the
+    server, so the send is verified rather than assumed. Empty `text` is
+    rejected (the API silently accepts it and posts nothing useful).
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("text is empty — nothing to send.")
+
+    dialogs = list_chats(limit=200)
+    if not dialog_id:
+        if not to:
+            raise ValueError("Pass dialog_id or to=<name/title>.")
+        needle = to.strip().casefold()
+        hits = [d for d in dialogs
+                if needle in (d.get("title") or "").casefold()]
+        if not hits:
+            raise ValueError(f"No chat matching {to!r}. Use list_chats first.")
+        if len(hits) > 1:
+            exact = [d for d in hits
+                     if (d.get("title") or "").casefold() == needle]
+            if len(exact) != 1:
+                titles = ", ".join(repr(d.get("title")) for d in hits[:8])
+                raise ValueError(f"{to!r} is ambiguous: {titles}. "
+                                 "Pass dialog_id instead.")
+            hits = exact
+        dialog_id = hits[0]["id"]
+
+    assert dialog_id
+    target = next((d for d in dialogs if d.get("id") == dialog_id), None)
+
+    api("chat/send", {"dialog": dialog_id, "message": text})
+
+    sent = None
+    # A chatbot peer can post several replies within the same second, so the
+    # echo of our own message may already be pushed down the history.
+    for m in read_chat(dialog_id, limit=15):
+        if (m.get("text") or "").strip() == text:
+            sent = m
+            break
+    if sent is None:
+        raise ValueError("Message did not appear in the chat history — "
+                         "treat the send as failed.")
+    return {
+        "dialog_id": dialog_id,
+        "title": (target or {}).get("title"),
+        "sent": sent,
+    }
+
+
 if __name__ == "__main__":
     mcp.run()
