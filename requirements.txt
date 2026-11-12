@@ -1,0 +1,3 @@
+# Runtime deps, pinned to what the live server was verified with (2026-11-12).
+fastmcp==3.4.7
+httpx[socks]==0.28.1

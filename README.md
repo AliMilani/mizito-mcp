@@ -1,123 +1,172 @@
 # Mizito MCP
 
-MCP server for [Mizito](https://office.mizito.ir), the Iranian
-project-management and team-chat tool. Projects, tasks, and internal chat.
-Reads are broad; the only write is sending a chat message.
+MCP server for [Mizito](https://office.mizito.ir), the Iranian project-management
+and team-chat tool. It covers projects, kanban boards, tasks, task comments and
+history, workload, team chat, and switching between workspaces.
 
-Built by reverse-engineering the SPA's own API; Mizito publishes no docs.
+Mizito publishes no API. Everything was reverse-engineered from the web app's
+own JavaScript and checked against the live API.
 
-## Quick start
+## Setup
+
+The launcher is `run-mcp.sh`. It sources `.env` (mode 0600, holds `MIZITO_TOKEN`)
+and execs `.venv/bin/python server.py`. Register it as a stdio server in your
+MCP client.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install fastmcp "httpx[socks]" websockets
-./tools/refresh-auth.sh     # opens isolated Chrome, you log in, writes .env
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt                       # deps (pinned)
+cp .env.example .env && chmod 600 .env                          # or use refresh-auth.sh
 ```
 
-Register `run-mcp.sh` as a stdio server in your MCP client. If the API starts
-returning 401/403, the token expired: run `./tools/refresh-auth.sh` again and
-restart the client.
+If tools start failing with "Mizito rejected the token", the session was revoked.
+Run this, log in to the browser window it opens, then restart your MCP client:
+
+```bash
+./tools/refresh-auth.sh
+```
+
+Options (in `.env`):
+
+- `MIZITO_READ_ONLY=1`: no write tools at all.
+- `MIZITO_LOG_LEVEL=INFO`: one stderr line per API call, never with bodies or the token.
+- `MIZITO_CACHE_TTL=300`: seconds that users, projects, labels and chats stay cached.
 
 ## Tools
 
-| Tool | What it answers |
+Arguments for people, projects, boards, labels and chats accept an **id or a
+name**. Persian names match even with Arabic ي/ك or ZWNJ differences. `"me"` means
+you. An ambiguous name is an error that lists the candidates.
+
+Dates come back as UTC ISO plus `*_fa` in Tehran time on the Jalali calendar
+(`1405/08/21 14:30`). Date inputs accept `2026-11-20 14:30`, `1405/08/30 14:30`
+or ISO with `Z`.
+
+### Read (25)
+
+| Tool | Answers |
 |---|---|
-| `whoami` | my user id, workspace id/name, plan days |
-| `list_workspace_users` | members + ids (resolve an assignee id to a name) |
-| `list_projects(include_archived=False)` | open projects, kanban boards, chat id |
-| `get_projects_summary(with_details=True)` | per-project total/completed/overdue |
-| `list_my_tasks(inbox=True, limit=50)` | what I'm assigned / what's due |
-| `get_task_counts` | badge counts (due today, total open) |
-| `get_dashboard_summary` | cross-workspace unread + task rollup |
-| `list_chats(only_unread=False, limit=60)` | DMs + project groups, names resolved |
-| `read_chat(dialog_id, limit=30)` | messages with sender names |
-| `get_project_chat(project_id, limit=30)` | a project's group chat by project id |
-| `send_message(text, dialog_id=None, to=None)` | **write** — post a message to a DM or group |
+| `daily_brief` | standup in one call: my overdue / due today, unread chats, project counts |
+| `whoami` / `health_check` | who am I, which workspace, plan days, storage / is Mizito reachable |
+| `list_workspaces` / `switch_workspace` | every workspace with unread counts / act on another one (in memory) |
+| `list_workspace_users` | members, roles, online/last seen, what each last worked on |
+| `list_projects` / `get_project` | projects with boards and counts / one project: members, per-board counts |
+| `get_projects_summary` | per-project open / done / overdue only |
+| `list_labels` | task or project labels |
+| `list_tasks` | the main task query: project / mine / outbox / everything; board, assignee, owner, label, open/done/all, overdue, text; paginated |
+| `list_my_tasks` | my tasks, overdue first |
+| `search_tasks` | Mizito's own search (includes archived projects) plus exact local match |
+| `get_task` | full task: notes, checklist with ids, attachments, comments, optional history |
+| `get_task_comments` / `get_task_history` / `get_task_seen` | comments / change log / who opened it |
+| `get_user_workload` | one person's open tasks across projects, per project, overdue |
+| `get_task_counts` / `get_dashboard_summary` | badge counts / raw cross-workspace rollup |
+| `list_chats` | DMs, groups and project chats, unread counts, filter by kind or title |
+| `read_chat` / `get_project_chat` | paged history (offset), sender names, replies, task cards |
+| `search_chat` / `search_messages` | server search in one chat (text or sender) / across all chats |
 
-Typical chains:
-- "any unread messages?" → `list_chats(only_unread=True)` → `read_chat(id)`
-- "how's project X doing?" → `get_projects_summary` → filter by title
-- "what's on my plate?" → `list_my_tasks`
+### Write (19; each one reads back and fails loudly if the change did not land)
 
-## Layout
+| Tool | Does |
+|---|---|
+| `send_message` | to a chat title, a dialog id, or a person by exact full name (opens the DM); `reply_to`, `mention` |
+| `edit_message` / `delete_message` / `mark_chat_read` | my own message / for everyone / clear the unread badge |
+| `create_task` | in a project: board (default first), assignees, notes, reminder, deadline, labels, checklist, first comment |
+| `update_task` | title, notes, assignees (set/add/remove), labels, deadline, checklist add/remove |
+| `complete_task` / `reopen_task` | done / not done |
+| `set_task_reminder` | schedule / clear: the date Mizito uses for today and overdue |
+| `set_task_progress` / `set_task_deadline` | percentage / deadline (only projects with the deadline feature) |
+| `move_task` | to another kanban column, top or bottom |
+| `set_checklist_item` | tick or untick by id or title |
+| `add_task_comment` / `edit_task_comment` / `delete_task_comment` | with reply and mentions |
+| `delete_task` / `restore_task` | soft delete with undo |
+| `bookmark_task` | private star |
+
+Write tools change shared data that teammates see and get notified about.
+All write tools were verified live on 2026-11-12 in a private sandbox project ([docs/API.md](docs/API.md)).
+
+## Typical chains
+
+- "what's going on?": `daily_brief`
+- "Sara's open tasks?": `get_user_workload(user="سارا")`
+- "what is overdue in the shop project?": `list_tasks(project="فروشگاه", overdue_only=True)`
+- "any message from Sara?": `list_chats(only_unread=True)`, then `read_chat(chat="سارا")`
+- "mark the payment-bug task done": `search_tasks("باگ پرداخت")`, then `complete_task(task_id)`
+
+## Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest          # 65 offline tests, no network
+.venv/bin/python tools/smoke.py     # live: every read tool over real stdio
+```
+
+`tools/smoke.py` only calls read tools, but it reads your real workspace.
+`MIZITO_READ_ONLY=1 .venv/bin/python tools/smoke.py` also proves the write gate.
+
+## Development
+
+Layout:
 
 ```
-server.py            the MCP server (the only file that matters at runtime)
-run-mcp.sh           launcher; sources .env, execs .venv/bin/python server.py
-Dockerfile           portable build; token injected via --env-file
-.env                 MIZITO_TOKEN (0600, gitignored)
-tools/               reverse-engineering + maintenance kit
-  refresh-auth.sh     re-login flow when the token expires
-  launch-chrome.sh     isolated Chrome w/ CDP :9333 (Wayland-aware)
-  capture.py           record all XHR traffic -> capture.jsonl
-  grab_auth.py        pull token from the page's localStorage -> .env
-  probe_api.py         probe endpoint names/params from inside the page
+server.py                 entry point (run-mcp.sh and Docker exec this path)
+run-mcp.sh                sources .env, execs .venv/bin/python server.py
+mizito_mcp/
+  config.py               env -> Settings (MIZITO_TOKEN, MIZITO_READ_ONLY, ...)
+  client.py               HTTP; error mapping; read retries; no write retries
+  util.py                 Persian normalisation, Jalali/Tehran dates, scrub()
+  directory.py            TTL caches + name->id resolution + task token registry
+  tasks_api.py            task scopes, paging (25/page via `from`), local filters, sort
+  shape.py                raw Mizito JSON -> compact dicts for the client
+  tools/__init__.py       @tool decorator (annotations, scrub, read-only gate)
+  tools/workspace.py      whoami, users, workspaces, health, counts
+  tools/projects.py       projects, project detail (+per-board counts), labels
+  tools/tasks.py          list/search/get task, comments, history, workload, brief
+  tools/task_writes.py    task mutations (each verified by read-back)
+  tools/chat.py           chats, paged history, project chat, search
+  tools/chat_writes.py    send / reply / edit / delete messages, mark read
+  app.py                  build() -> FastMCP server + instructions for the client
+tests/                    offline pytest suite (fake Mizito via httpx.MockTransport)
+tools/smoke.py            live: spawns run-mcp.sh over stdio, calls every read tool
+tools/extract_endpoints.py  regenerates docs/ENDPOINTS.md from the live SPA bundle
+tools/refresh-auth.sh     re-login flow when the token is revoked (isolated Chrome)
+tools/capture.py etc.     CDP capture/probe kit for finding new endpoints
 ```
 
-## API notes (reverse-engineered, 2026-08-30)
+Rules the code relies on:
 
-- Base `https://app.mizito.ir`. **Every** endpoint is `POST`; body `{}` when no args.
-- Auth: one `x-token` header. Minted by `POST /capi/session/create`
-  `{username, password}`, stored by the SPA in `localStorage.token`.
-  **Verified by decoding it (2026-08-30):** HS256, claims are only `{jti, iat}` —
-  there is **no `exp` claim**, so the token does not self-expire. It stays valid
-  until Mizito revokes it server-side (logout elsewhere, password change, session
-  purge). Two consequences:
-  - Reliability: the MCP will not spontaneously break on a timer. If it 401s,
-    something actively invalidated the session.
-  - Security: `.env` holds a **non-expiring bearer credential equal to full
-    account access**. Keep it 0600, never commit it, and re-run
-    `tools/refresh-auth.sh` after any Mizito password change.
-- **Status codes are the discovery oracle:** `405` = endpoint doesn't exist,
-  `400` = exists but wrong params, `200` = correct. This turns name-guessing
-  into a fast binary search.
+1. **Never expose a task `access_token`.** It is a JWT whose payload embeds the
+   user's session token. `util.scrub()` runs on every tool result as a safety
+   net. The same goes for `MIZITO_TOKEN`: never print, log or commit it.
+2. **No guessed write endpoints.** Every write body comes from the SPA call site
+   (cited in docs/API.md) and is verified live on a throwaway object first.
+3. **Every write reads back** and raises if the change is not visible. Writes
+   are never retried automatically (`client.call(..., write=True)`).
+4. **Ambiguity is an error.** Name -> id resolution never guesses between
+   candidates. Where a wrong match would message the wrong person (opening a
+   new DM), only an id or an exact full name counts.
+5. **Verify by identity, not by time.** A send or comment proves itself by a
+   NEW id. When the write surely happened but the read-back failed, the tool
+   returns `verified: false` instead of raising, so the caller does not retry
+   and create a duplicate.
 
-| Endpoint | Body | Returns |
-|---|---|---|
-| `workspace/userId` | `{"regId":null}` | uid, wid, plan info |
-| `workspace/name` | `{}` | workspace name (bare JSON string) |
-| `workspace/getUsers` | `{}` | members |
-| `projects/getList` | `{}` | `{projects:[...]}` w/ `kanban_boards`, `dialog` |
-| `projects/allSummary` | `{"with_details":true}` | `{summaries:[...]}` |
-| `tasks/upcoming` | `{"inbox":true,"from_dashboard":true,"from":null,"filter":null}` | task list |
-| `tasks/badge` | `{}` | `{today,count,total_count}` |
-| `chat/getDialogs` | `{}` | `{dialogs:[...], pin_dialogs:[...]}` |
-| `chat/getHistory` | `{"dialog":"<id>","limit":20}` | message list |
-| `chat/send` | `{"dialog":"<id>","message":"<text>"}` | `true` |
-| `dashboard/getAllSummary` | `{}` | per-workspace rollup |
-| `labels/getAll` | `{"type":"project"}` | labels |
+Adding a feature:
 
-Gotchas:
-- `chat/getMessages` exists but always returns `[]` — **use `chat/getHistory`**.
-- Chat messages are often task cards, not text: `media._ == "messageMediaTask"`.
-  `read_chat` flags these as `type: "task_card"` so an empty `text` isn't
-  mistaken for an empty message.
-- DM dialogs have `title: null`; the name must be resolved via `peer_user`
-  against `workspace/getUsers`.
+1. Find the call site in the decompressed bundle:
+   `grep -o '.\{300\}invokeApi("ns.method".\{300\}' a_dec.js`
+   (`tools/extract_endpoints.py` shows how to get it; it is gzip without a
+   Content-Encoding header).
+2. Probe reads live. 200 = right, 400 = wrong body, 405 = wrong name.
+3. For writes: create a throwaway private task, exercise the write on it, read
+   it back, delete it.
+4. Add the tool in the right `tools/*.py`, shape its output in `shape.py`, add
+   an offline test with the fake in `tests/conftest.py`, run pytest and smoke.py.
+5. Update docs/API.md and the tool tables above.
 
-## Known gap
+MCP clients bind the tool list at session start: restart the client after
+changing tools.
 
-**No per-project task list.** `tasks/getProjectTasks`, `projects/tasks`,
-`tasks/list`, `tasks/getAll`, `tasks/getAllByProject` all return 405.
-`tasks/get` returns 400 (exists, params unknown). To find it: run
-`tools/capture.py`, open a project's task view in the browser, and read the
-captured call. Until then `list_my_tasks` + `get_projects_summary` cover most
-questions.
+## Docs
 
-## Scope
-
-**Reads plus one write: `send_message`.** No create/update/delete on projects or
-tasks — that traffic was never captured, and untested writes against a live,
-shared workspace are not worth the risk. Adding more writes = capture the
-mutation in the browser first, then implement.
-
-`send_message` notes (found 2026-09-01 by 405/400/200 probing, not by capture):
-- Endpoint is `chat/send`; `chat/sendMessage` and friends are all 405.
-- `{}` and `{dialog}` alone → 400. `{dialog, message}` → `200 true`.
-- **`message:""` returns 200 too** and posts a blank message, so the tool
-  rejects empty text before calling the API.
-- The API returns bare `true`, no message object — the tool re-reads the last 15
-  messages and matches the text, and raises if it isn't there. Don't trust a 200.
-  The 15 (not 3) matters: bot peers like دستيار ميزيتو fire several auto-replies
-  in the same second and push your own echo down the list.
-- `to=` resolves a name/title substring against `list_chats`; ambiguous matches
-  (e.g. a word shared by several project titles) raise with the candidates listed.
+- [docs/API.md](docs/API.md): verified endpoints, bodies, gotchas
+- [docs/ENDPOINTS.md](docs/ENDPOINTS.md): all SPA endpoints (generated by `tools/extract_endpoints.py`)
+- [docs/SPA_CALLSITES.md](docs/SPA_CALLSITES.md): how the web app builds each request
