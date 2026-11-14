@@ -5,7 +5,7 @@
 # waits for a manual login, then writes the new token to .env (0600).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-PY="$HERE/.venv/bin/python"
+PY="${MIZITO_PYTHON:-$HERE/.venv/bin/python}"
 
 echo "1/3 launching isolated Chrome (CDP :9333)..."
 bash "$HERE/tools/launch-chrome.sh" >/dev/null 2>&1 &

@@ -9,22 +9,48 @@ own JavaScript and checked against the live API.
 
 ## Setup
 
-The launcher is `run-mcp.sh`. It sources `.env` (mode 0600, holds `MIZITO_TOKEN`)
-and execs `.venv/bin/python server.py`. Register it as a stdio server in your
-MCP client.
+Needs Python 3.11+, and Google Chrome for the login helper.
 
 ```bash
+git clone https://github.com/AliMilani/mizito-mcp.git && cd mizito-mcp
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt                       # deps (pinned)
-cp .env.example .env && chmod 600 .env                          # or use refresh-auth.sh
+.venv/bin/pip install -r requirements.txt websockets   # websockets: login helper only
+./tools/refresh-auth.sh                                 # log in once, writes .env (0600)
 ```
 
-If tools start failing with "Mizito rejected the token", the session was revoked.
-Run this, log in to the browser window it opens, then restart your MCP client:
+`refresh-auth.sh` opens Chrome with a separate, empty profile, waits for you to
+log in to Mizito, and copies the session token from the page into `.env`. Your
+everyday browser profile is never touched. You can also paste a token into
+`.env` by hand (`cp .env.example .env && chmod 600 .env`).
+
+Then register `run-mcp.sh` as a stdio server in your MCP client. Most clients
+take a JSON entry like this:
+
+```json
+{
+  "mcpServers": {
+    "mizito": { "command": "/absolute/path/to/mizito-mcp/run-mcp.sh" }
+  }
+}
+```
+
+The token never goes into the client's config: `run-mcp.sh` reads it from
+`.env`. It also honours:
+
+- `MIZITO_ENV_FILE`: another env file (for example one per workspace or account).
+  Not needed when `MIZITO_TOKEN` is already in the environment.
+- `MIZITO_PYTHON`: the interpreter to use (default `.venv/bin/python`, else `python3`).
+
+Docker works too; the token stays out of the image:
 
 ```bash
-./tools/refresh-auth.sh
+docker build -t mizito-mcp .
+docker run --rm -i --env-file .env mizito-mcp
 ```
+
+If tools start failing with "Mizito rejected the token", the session was revoked
+(logout elsewhere, password change). Run `./tools/refresh-auth.sh` again, then
+restart your MCP client.
 
 Options (in `.env`):
 
