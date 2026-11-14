@@ -2,6 +2,7 @@
 name = "mizito-mcp"
 version = "2.0.0"
 description = "MCP server for Mizito (office.mizito.ir): projects, tasks, chat"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["fastmcp==3.4.7", "httpx[socks]==0.28.1"]
 
