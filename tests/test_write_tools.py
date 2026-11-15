@@ -3,7 +3,7 @@ import copy
 
 import pytest
 
-from tests.conftest import B1, B2, DLG_P1, DLG_SARA, LBL, ME, P1, SARA, task
+from tests.conftest import B1, B2, B3, DLG_P1, DLG_SARA, LBL, ME, P1, P2, SARA, task
 
 
 @pytest.fixture
@@ -58,6 +58,14 @@ def store(fake):
         t["kanban_board"], t["kanban_weight"] = b["kanbanBoardId"], b["kanbanWeight"]
         return True
     fake.route("tasks/setKanbanWeight", weight)
+
+    def tick(b):
+        for i in tasks[b["token"]]["checklist"]:
+            if i["_id"] == b["checklistId"]:
+                i["checked"] = b["checked"]
+                i["checked_by"] = ME if b["checked"] else None
+        return True
+    fake.route("tasks/setChecklistCheckedValue", tick)
     return put
 
 
@@ -89,7 +97,7 @@ def test_create_task_sends_spa_body(call, fake, store):
                                      "repeat_type": "none", "has_custom_repeat": False}
     assert body["kanban_board"] == "5e00000000000000000000b3"  # first column by default
     assert body["labels"] == [LBL]
-    assert body["insert_to_chat_group"] is False
+    assert body["insert_to_chat_group"] is True  # the project has a chat, like the web app
     assert r["verified"]["created"] and r["task"]["title"] == "hello"
 
 
@@ -277,3 +285,92 @@ def test_set_task_reminder_uses_snooze(call, fake, store):
                                             "alarm_at": "2026-12-01T06:00:00.000Z",
                                             "update_repeat_base": False}]
     assert r["task"]["reminder_fa"] == "1405/09/10 09:30"
+
+
+# ---------------------------------------------------------------- web-app parity
+
+OTHER = "7" * 24
+
+
+def _projects(fake, **changes):
+    """Edit the fake projects/getList rows: changes = {project_id: {field: value}}."""
+    rows = copy.deepcopy(fake.routes["projects/getList"](None)["projects"])
+    for p in rows:
+        p.update(changes.get(p["_id"], {}))
+    fake.route("projects/getList", {"projects": rows})
+
+
+def test_create_task_card_follows_project_chat(call, fake, store):
+    _projects(fake, **{P1: {"dialog": None}})
+    call("create_task", title="x", project=P1)
+    call("create_task", title="y", project=P2, post_card_to_project_chat=False)
+    call("create_task", title="z", project=P1, post_card_to_project_chat=True)
+    assert [b["insert_to_chat_group"] for b in fake.bodies("tasks/add")] == [False, False, True]
+
+
+def test_update_task_sends_card_flag_like_the_editor(call, fake, store):
+    a = store(task(20))
+    b = store(task(21, project=P2, board=B3))
+    _projects(fake, **{P2: {"dialog": None}})
+    call("update_task", task_id=a["_id"], title="a2")
+    call("update_task", task_id=b["_id"], title="b2")
+    assert [x["insert_to_chat_group"] for x in fake.bodies("tasks/save")] == [True, False]
+
+
+def _items(*states):
+    return [{"_id": f"i{n}", "title": f"item {n}", "checked": c, "checked_by": by}
+            for n, (c, by) in enumerate(states)]
+
+
+def test_checklist_refused_on_done_or_deleted_task(call, fake, store):
+    done = store(task(22, completed=True, checklist=_items((False, None))))
+    gone = store(task(23, deleted=True, checklist=_items((False, None))))
+    for t in (done, gone):
+        with pytest.raises(Exception, match="done or deleted"):
+            call("set_checklist_item", task_id=t["_id"], item="i0")
+    assert not fake.bodies("tasks/setChecklistCheckedValue")
+
+
+def test_checklist_untick_other_persons_item_needs_project_admin(call, fake, store):
+    t = store(task(24, checklist=_items((True, OTHER), (True, ME))))
+    with pytest.raises(Exception, match="only a project admin"):
+        call("set_checklist_item", task_id=t["_id"], item="i0", checked=False)
+    assert not fake.bodies("tasks/setChecklistCheckedValue")
+    call("set_checklist_item", task_id=t["_id"], item="i1", checked=False)  # my own tick
+    assert len(fake.bodies("tasks/setChecklistCheckedValue")) == 1
+
+
+def test_checklist_project_admin_may_untick_other_persons_item(call, fake, store):
+    _projects(fake, **{P1: {"members_admin": [ME]}})
+    t = store(task(25, checklist=_items((True, OTHER))))
+    r = call("set_checklist_item", task_id=t["_id"], item="i0", checked=False)
+    assert r["ok"] and r["verified"]["checked"] is False
+
+
+def test_checklist_last_tick_reports_all_items_done(call, fake, store):
+    t = store(task(26, checklist=_items((True, ME), (False, None), (False, None))))
+    r = call("set_checklist_item", task_id=t["_id"], item="i1")
+    assert "all_items_done" not in r
+    r = call("set_checklist_item", task_id=t["_id"], item="i2")
+    assert r["all_items_done"] is True and "complete_task" in r["next"]
+    assert not fake.bodies("tasks/setCompleted")  # never completes on its own
+
+
+def test_move_task_weights_like_kanban_drop(call, fake, store):
+    t = store(task(27, board=B1))
+    call("move_task", task_id=t["_id"], board=B2)  # empty column
+    store(task(28, board=B2, kanban_weight=800))
+    u = store(task(29, board=B1))
+    call("move_task", task_id=u["_id"], board=B2, position="top")  # half of 800
+    store(task(30, board=B1, kanban_weight=-50))  # left by the old min - 100 rule
+    v = store(task(31, board=B2))
+    call("move_task", task_id=v["_id"], board=B1, position="top")
+    weights = [b["kanbanWeight"] for b in fake.bodies("tasks/setKanbanWeight")]
+    assert weights == [1000, 400, -150]
+
+
+def test_progress_100_is_refused_in_favour_of_complete_task(call, fake, store):
+    t = store(task(32))
+    with pytest.raises(Exception, match="complete_task"):
+        call("set_task_progress", task_id=t["_id"], percent=100)
+    assert not fake.bodies("tasks/updateProgress") and not fake.bodies("tasks/setCompleted")

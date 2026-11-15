@@ -96,13 +96,13 @@ or ISO with `Z`.
 |---|---|
 | `send_message` | to a chat title, a dialog id, or a person by exact full name (opens the DM); `reply_to`, `mention` |
 | `edit_message` / `delete_message` / `mark_chat_read` | my own message / for everyone / clear the unread badge |
-| `create_task` | in a project: board (default first), assignees, notes, reminder, deadline, labels, checklist, first comment |
+| `create_task` | in a project: board (default first), assignees, notes, reminder, deadline, labels, checklist, first comment; posts the task card to the project chat like the web app |
 | `update_task` | title, notes, assignees (set/add/remove), labels, deadline, checklist add/remove |
 | `complete_task` / `reopen_task` | done / not done |
 | `set_task_reminder` | schedule / clear: the date Mizito uses for today and overdue |
-| `set_task_progress` / `set_task_deadline` | percentage / deadline (only projects with the deadline feature) |
-| `move_task` | to another kanban column, top or bottom |
-| `set_checklist_item` | tick or untick by id or title |
+| `set_task_progress` / `set_task_deadline` | percentage 0-99 (100 = `complete_task`) / deadline (only projects with the deadline feature) |
+| `move_task` | to another kanban column, top or bottom (same weights as the web app) |
+| `set_checklist_item` | tick or untick by id or title, with the web app's rules; reports when every item is ticked |
 | `add_task_comment` / `edit_task_comment` / `delete_task_comment` | with reply and mentions |
 | `delete_task` / `restore_task` | soft delete with undo |
 | `bookmark_task` | private star |

@@ -72,6 +72,13 @@ def register(tool, ctx: Ctx) -> None:
     def _labels(values: list[str] | None) -> list[str]:
         return [d.resolve_label(v) for v in values or []]
 
+    def _project_has_chat(pid: str | None) -> bool:
+        """The SPA task editor ticks "insert to chat group" whenever the
+        project has a chat (SPA_CALLSITES §1). Mizito posts every later change
+        of a task as a reply to that card, so a task saved without it never
+        shows up in the project chat."""
+        return bool(pid and (d.projects().get(pid) or {}).get("dialog"))
+
     # ------------------------------------------------------------ create
 
     @tool(write=True)
@@ -80,7 +87,7 @@ def register(tool, ctx: Ctx) -> None:
                     deadline: str | None = None, labels: list[str] | None = None,
                     checklist: list[str] | None = None, comment: str | None = None,
                     reminder: str | None = None,
-                    post_card_to_project_chat: bool = False) -> dict:
+                    post_card_to_project_chat: bool | None = None) -> dict:
         """Create a task in a project. Assignees get notified: confirm with the
         user first unless they asked for exactly this task.
 
@@ -91,7 +98,9 @@ def register(tool, ctx: Ctx) -> None:
             Mizito uses for today / overdue. "2026-11-20 14:30" | "1405/08/30 14:30".
         deadline: "مهلت انجام", only in projects with the deadline feature.
         checklist: item titles. comment: first comment text.
-        post_card_to_project_chat: also drop a task card into the project chat.
+        post_card_to_project_chat: put a task card into the project chat.
+            Default: yes when the project has a chat, like the web app. Later
+            changes to the task show up in the chat only if it has this card.
         """
         title = (title or "").strip()
         if not title:
@@ -105,6 +114,8 @@ def register(tool, ctx: Ctx) -> None:
         if deadline:
             _require_deadline_feature(pid)
         who = d.resolve_users(["me"] if assignees is None else assignees)
+        card = (_project_has_chat(pid) if post_card_to_project_chat is None
+                else bool(post_card_to_project_chat))
         body = {
             "title": title, "notes": notes or "", "assignee": who or [None],
             "project": pid, "kanban_board": bid, "labels": _labels(labels),
@@ -115,7 +126,7 @@ def register(tool, ctx: Ctx) -> None:
             "checklist": [{"title": x.strip(), "checked": False}
                           for x in checklist or [] if x and x.strip()],
             "responsible": None, "from_chat": False, "from_minute": False,
-            "insert_to_chat_group": bool(post_card_to_project_chat),
+            "insert_to_chat_group": card,
         }
         resp = c.call("tasks/add", body, write=True)
         made = resp[0] if isinstance(resp, list) and resp else resp
@@ -205,7 +216,8 @@ def register(tool, ctx: Ctx) -> None:
             "deadline_start": t.get("deadline_start") if t.get("has_deadline_start") else None,
             "deadline": dl, "comment": "", "checklist": items,
             "responsible": t.get("responsible"), "from_chat": False,
-            "from_minute": False, "insert_to_chat_group": False,
+            "from_minute": False,
+            "insert_to_chat_group": _project_has_chat(t.get("project")),
             "task_id": t["_id"], "token": token(task_id),
         }
         c.call("tasks/save", body, write=True)
@@ -270,9 +282,13 @@ def register(tool, ctx: Ctx) -> None:
 
     @tool(write=True, idempotent=True)
     def set_task_progress(task_id: str, percent: int) -> dict:
-        """Set a task's progress percentage (0-100). 100 does not complete it."""
+        """Set a task's progress percentage (0-99). For 100 use complete_task:
+        in the web app 100% means done, and it asks before completing."""
+        if percent == 100:
+            raise ValueError("100% means done in Mizito: the web app asks first, then "
+                             "completes the task. Ask the user, then call complete_task.")
         if not 0 <= percent <= 100:
-            raise ValueError("percent must be 0-100")
+            raise ValueError("percent must be 0-99 (use complete_task for 100)")
         c.call("tasks/updateProgress", {"token": token(task_id), "progress": percent},
                write=True)
         t = verify(task_id, lambda x: (x.get("progress") or 0) == percent,
@@ -336,8 +352,16 @@ def register(tool, ctx: Ctx) -> None:
         weights = [x.get("kanban_weight") or 0 for x in siblings]
         if position not in ("top", "bottom"):
             raise ValueError("position must be 'top' or 'bottom'")
-        weight = ((max(weights) + 100) if weights else 100) if position == "bottom" \
-            else ((min(weights) - 100) if weights else 100)
+        # The SPA's kanban drop (SPA_CALLSITES): empty column 1000, bottom =
+        # last + 100, top = half the first. Halving cannot get above a weight
+        # <= 0 (older versions of this tool wrote min - 100), so fall back.
+        if not weights:
+            weight = 1000
+        elif position == "bottom":
+            weight = max(weights) + 100
+        else:
+            first = min(weights)
+            weight = first / 2 if first > 0 else first - 100
         c.call("tasks/setKanbanWeight", {"token": token(task_id), "projectId": pid,
                                          "kanbanBoardId": bid, "kanbanWeight": weight},
                write=True)
@@ -349,10 +373,19 @@ def register(tool, ctx: Ctx) -> None:
     @tool(write=True, idempotent=True)
     def set_checklist_item(task_id: str, item: str, checked: bool = True) -> dict:
         """Tick or untick one checklist item. `item` = the item id from
-        get_task, or its exact/unique title."""
+        get_task, or its exact/unique title.
+
+        Same rules as the web app: no changes on a done or deleted task; an
+        item someone else ticked can be unticked only by a project admin.
+        When the last item gets ticked the result says all_items_done: the
+        web app then asks whether to mark the task done, so ask the user and
+        call complete_task (this tool never completes the task itself)."""
         if not item or not item.strip():
             raise ValueError("item is empty: pass a checklist item id or title")
         t = get(task_id)
+        if t.get("completed") or t.get("deleted"):
+            raise ValueError("The task is done or deleted: Mizito does not allow checklist "
+                             "changes. Reopen it first (reopen_task).")
         items = t.get("checklist") or []
         hit = [i for i in items if i.get("_id") == item] or \
               [i for i in items if norm(i.get("title")) == norm(item)] or \
@@ -361,13 +394,24 @@ def register(tool, ctx: Ctx) -> None:
             raise ValueError(f"checklist item {item!r} matched {len(hit)} items; "
                              "pass the item id from get_task")
         cid = hit[0]["_id"]
+        if not checked and hit[0].get("checked") and hit[0].get("checked_by") != d.me():
+            p = d.projects().get(t.get("project")) or {}
+            if not (p.get("is_advanced") and d.me() in (p.get("members_admin") or [])):
+                raise ValueError("Someone else ticked this item: only a project admin can "
+                                 "untick it (web app rule).")
         c.call("tasks/setChecklistCheckedValue", {"token": token(task_id),
                                                   "checklistId": cid, "checked": checked},
                write=True)
         t = verify(task_id, lambda x: any(i.get("_id") == cid and bool(i.get("checked")) == checked
                                           for i in x.get("checklist") or []),
                    f"checklist {cid} checked={checked}")
-        return result(t, item=hit[0].get("title"), checked=checked)
+        out = result(t, item=hit[0].get("title"), checked=checked)
+        now = t.get("checklist") or []
+        if checked and now and all(i.get("checked") for i in now):
+            out["all_items_done"] = True
+            out["next"] = ("Every checklist item is ticked. The web app now asks whether "
+                           "to mark the task done: ask the user, then call complete_task.")
+        return out
 
     # ------------------------------------------------------------ comments
 

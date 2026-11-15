@@ -85,15 +85,15 @@ has_comments, last_comment, created_at, modified_at, dialog, dialog_message`.
 
 | tool | endpoint | body | status |
 |---|---|---|---|
-| create_task | `tasks/add` | `{title, notes, assignee:[uid]\|[null], project, kanban_board\|null, labels:[id], attachments:[], deleted:false, alarm_options:null, progress:0, weight:1, deadline_start:null, deadline:ISO\|null, comment:"", checklist:[{title,checked:false}], responsible:null, from_chat:false, from_minute:false, insert_to_chat_group:bool}` -> task (or array with `copy_users`) | live 2026-11-12 |
-| update_task | `tasks/save` | the full object above built from the current task + `task_id`, `token`. No partial patch: always send everything | live 2026-11-12 |
+| create_task | `tasks/add` | `{title, notes, assignee:[uid]\|[null], project, kanban_board\|null, labels:[id], attachments:[], deleted:false, alarm_options:null, progress:0, weight:1, deadline_start:null, deadline:ISO\|null, comment:"", checklist:[{title,checked:false}], responsible:null, from_chat:false, from_minute:false, insert_to_chat_group:bool}` -> task (or array with `copy_users`). `insert_to_chat_group` defaults to "the project has a chat" (`dialog`), like the SPA editor | live 2026-11-12 (card default: 2026-11-15) |
+| update_task | `tasks/save` | the full object above built from the current task + `task_id`, `token`. No partial patch: always send everything. `insert_to_chat_group` = "the project has a chat": the SPA editor sets it for existing tasks too | live 2026-11-12 (card flag: 2026-11-15) |
 | complete_task | `tasks/setCompleted` | `{token, completed:true, project}` | live 2026-11-12 |
 | reopen_task | `tasks/setCompleted` | `{token, project, completed:false, progress, undone_user_id:<me>}` | live 2026-11-12 |
-| set_task_progress | `tasks/updateProgress` | `{token, progress}` | live 2026-11-12 |
+| set_task_progress | `tasks/updateProgress` | `{token, progress}`. The tool refuses 100: in the SPA 100% means done (it asks, then completes), so 100 goes through complete_task | live 2026-11-12 |
 | set_task_deadline | `tasks/updateDeadline` | `{token, project, deadline:ISO\|null}`. Only meaningful when the project has `advanced_has_deadline`: elsewhere the value is stored but `has_deadline` stays false and the UI never shows it (live 2026-11-12). The tool refuses up front in such projects | live 2026-11-12 (stores; feature-enabled project not tested) |
 | set_task_reminder | `tasks/snooze` | `{token, project, alarm_at:ISO\|null, update_repeat_base:false}`; sets `alarm_at` and `sort_date` | live 2026-11-12 |
-| move_task | `tasks/setKanbanWeight` | `{token, projectId, kanbanBoardId, kanbanWeight}` | live 2026-11-12 |
-| set_checklist_item | `tasks/setChecklistCheckedValue` | `{token, checklistId, checked}` | live 2026-11-12 |
+| move_task | `tasks/setKanbanWeight` | `{token, projectId, kanbanBoardId, kanbanWeight}`. Weights as the SPA kanban drop: empty column 1000, bottom = last + 100, top = first / 2 (min - 100 when first <= 0) | live 2026-11-12 |
+| set_checklist_item | `tasks/setChecklistCheckedValue` | `{token, checklistId, checked}`. SPA rules: refused on a done/deleted task; unticking an item `checked_by` someone else needs `is_advanced` + me in `members_admin`; after the last tick the SPA asks to complete the task (the tool returns `all_items_done`). The server recomputes `progress` | live 2026-11-12 |
 | add_task_comment | `tasks/newComment` (dynamic name in SPA) | `{token, comment, attachments:[], mention:[uid], reply_id:<commentId>\|null}`; response ignored, re-read comments | live 2026-11-12 |
 | edit_task_comment | `tasks/editComment` | `{token, commentId, newComment}` | live 2026-11-12 |
 | delete_task_comment | `tasks/deleteComment` | `{token, commentId}` | live 2026-11-12 |
